@@ -14,11 +14,11 @@ import Foundation
 
 struct IteratorContext {}
 
-private typealias URLIterator = Array<URL>.Iterator
+typealias URLIterator = IteratorProtocol<URL>
 
 protocol IteratorChain {
   mutating func next() -> URL?
-  func nextIterator() -> IteratorChain?
+  var nextIterator: IteratorChain? { get }
 }
 
 struct NestedIterator: Sequence, IteratorProtocol {
@@ -33,7 +33,7 @@ struct NestedIterator: Sequence, IteratorProtocol {
       if let next = current?.next() {
         return next
       }
-      current = current?.nextIterator()
+      current = current?.nextIterator
     } while current != nil
     return nil
   }
@@ -43,21 +43,29 @@ struct NestedIterator: Sequence, IteratorProtocol {
 /// traversed recursively, and we check for files with a ".swift" extension.
 @_spi(Internal)
 public struct FileIterator2: Sequence, IteratorProtocol {
-  private var iterators: IteratorChain
+  private var it: NestedIterator
+
+  /// Iterate through the "paths" list, and emit the file paths in it. If we encounter a directory,
+  /// recurse through it and emit .swift file paths.
+  public mutating func next() -> URL? {
+    return it.next()
+  }
 
   /// Create a new file iterator over the given list of file URLs.
   ///
   /// The given URLs may be files or directories. If they are directories, the iterator will recurse
   /// into them.
-  public init(urls: [URL], followSymlinks: Bool) {
-    self.iteratorIterator = TopIterator(urls: urls, followSymlinks: followSymlinks)
-  }
+  // public init(urls: [URL], followSymlinks: Bool) {
+  //   self.it = NestedIterator(
+  //     first:
+  //       ContextIterator(
+  //         urls: urls,
+  //         context: IteratorContext(),
+  //         followSymlinks: followSymlinks
+  //       )
+  //   )
+  // }
 
-  /// Iterate through the "paths" list, and emit the file paths in it. If we encounter a directory,
-  /// recurse through it and emit .swift file paths.
-  public mutating func next() -> URL? {
-    return nestedIterator.next()
-  }
 }
 
 /// Returns the type of the file at the given URL.
@@ -67,26 +75,75 @@ private func fileType(at url: URL) -> FileAttributeType? {
   return try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
 }
 
-struct ContextIterator: Sequence, IteratorProtocol {
-  var urlIterator: URLIterator
-  var nextIterator: IteratorChain?
+struct DirectoryEnumerator: Sequence, IteratorProtocol {
+  let iterator: FileManager.DirectoryEnumerator
 
-  init(urls: [URL]) {
-    self.urlIterator = urls.makeIterator()
+  init(url: URL) {
+    self.iterator = FileManager.default.enumerator(
+      at: url,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+    )!
   }
 
-  func next() -> Element? {
-    guard let url = urlIterator.next() else {
+  mutating func next() -> URL? {
+    return iterator.nextObject() as? URL
+  }
+}
+
+struct ContextIterator: Sequence, IteratorProtocol, IteratorChain {
+  var urlIterator: any URLIterator
+  var nextIterator: IteratorChain?
+  let context: IteratorContext
+  var followSymlinks: Bool
+
+  init(urlIterator: any URLIterator, context: IteratorContext, followSymlinks: Bool, next: IteratorChain? = nil) {
+    self.urlIterator = urlIterator
+    self.context = context
+    self.nextIterator = next
+    self.followSymlinks = followSymlinks
+  }
+
+  init(urls: [URL], context: IteratorContext, followSymlinks: Bool) {
+    self.init(urlIterator: urls.makeIterator(), context: context, followSymlinks: followSymlinks)
+  }
+
+  mutating func next() -> URL? {
+    var type: FileAttributeType?
+    guard let url = resolved(url: urlIterator.next(), type: &type) else {
       return nil
     }
 
-    switch fileType(at: url) {
-    case .directory:
-      return DirectoryIterator(url: url)
-    case .regular:
+    switch type {
+    case .typeRegular:
       return url
+
+    case .typeDirectory:
+      let subIterator = DirectoryEnumerator(url: url)
+      nextIterator = ContextIterator(
+        urlIterator: subIterator,
+        context: context,
+        followSymlinks: followSymlinks,
+        next: nextIterator
+      )
+
     default:
+      break
+    }
+
+    return next()
+  }
+
+  func resolved(url: URL?, type: inout FileAttributeType?) -> URL? {
+    guard let url else {
       return nil
     }
+
+    type = fileType(at: url)
+    if type == .typeSymbolicLink, let linkPath = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) {
+      return resolved(url: URL(fileURLWithPath: linkPath, relativeTo: url), type: &type)
+    }
+
+    return url
   }
 }
