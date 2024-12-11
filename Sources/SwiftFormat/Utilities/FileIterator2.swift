@@ -45,27 +45,26 @@ struct NestedIterator: Sequence, IteratorProtocol {
 public struct FileIterator2: Sequence, IteratorProtocol {
   private var it: NestedIterator
 
+  /// Create a new file iterator over the given list of file URLs.
+  ///
+  /// The given URLs may be files or directories. If they are directories, the iterator will recurse
+  /// into them.
+  public init(urls: [URL], followSymlinks: Bool) {
+    self.it = NestedIterator(
+      first:
+        ContextIterator(
+          urls: urls,
+          context: IteratorContext(),
+          followSymlinks: followSymlinks
+        )
+    )
+  }
+
   /// Iterate through the "paths" list, and emit the file paths in it. If we encounter a directory,
   /// recurse through it and emit .swift file paths.
   public mutating func next() -> URL? {
     return it.next()
   }
-
-  /// Create a new file iterator over the given list of file URLs.
-  ///
-  /// The given URLs may be files or directories. If they are directories, the iterator will recurse
-  /// into them.
-  // public init(urls: [URL], followSymlinks: Bool) {
-  //   self.it = NestedIterator(
-  //     first:
-  //       ContextIterator(
-  //         urls: urls,
-  //         context: IteratorContext(),
-  //         followSymlinks: followSymlinks
-  //       )
-  //   )
-  // }
-
 }
 
 /// Returns the type of the file at the given URL.
